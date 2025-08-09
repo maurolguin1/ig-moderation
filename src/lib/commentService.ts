@@ -1,7 +1,7 @@
 import * as XLSX from 'xlsx';
 import dayjs from 'dayjs';
 import utc from 'dayjs/plugin/utc';
-import { supabaseServerClient as sb } from '../lib/supabaseClient';
+import { supabaseServerClient as sb } from './supabaseClient';
 
 dayjs.extend(utc);
 
@@ -193,7 +193,7 @@ export interface SearchFilters {
 export function parseQueryForRpc(q?: string): { webq: string | null; prefixTerms: string[] } {
   if (!q) return { webq: null, prefixTerms: [] };
 
-  const tokens = q.match(/\"[^\"]+\"|-\\S+|\\S+/g) || [];
+  const tokens = q.match(/\"[^\"]+\"|-\S+|\S+/g) || [];
   const prefixTerms: string[] = [];
   const webParts: string[] = [];
 
@@ -263,4 +263,46 @@ export async function computeFacets() {
     ataquesPct: totalCount ? Math.round((ataquesCount / totalCount) * 100) : 0,
     porNivel: porNivelData || [],
   };
+}
+
+// ---------------- Comparador ----------------
+export type GroupMetrics = {
+  total: number;
+  ataques: number;
+  ataquesPct: number;
+  niveles: { level: number; count: number }[];
+};
+
+export async function compareGroups(groups: SearchFilters[]): Promise<GroupMetrics[]> {
+  const calls = groups.map(async (g) => {
+    const { data, error } = await sb.rpc('metrics_for_filter', {
+      _username: g.username || null,
+      _level_min: g.levelMin ?? null,
+      _level_max: g.levelMax ?? null,
+      _ataque: typeof g.ataque === 'boolean' ? g.ataque : null,
+      _polaridades: g.polaridad && g.polaridad.length ? g.polaridad : null,
+      _tipos: g.tipoAcoso && g.tipoAcoso.length ? g.tipoAcoso : null,
+      _from: g.from || null,
+      _to: g.to || null,
+      _video: g.videoSource || null,
+    });
+    if (error) throw error;
+    const row = (data && data[0]) || { total: 0, ataques: 0, niveles: {} };
+    const nivelesObj = row.niveles || {};
+    const niveles: { level: number; count: number }[] = Object.keys(nivelesObj)
+      .map((k) => ({ level: Number(k), count: Number(nivelesObj[k]) }))
+      .sort((a, b) => a.level - b.level);
+
+    const total = Number(row.total) || 0;
+    const ataques = Number(row.ataques) || 0;
+
+    return {
+      total,
+      ataques,
+      ataquesPct: total ? Math.round((ataques / total) * 100) : 0,
+      niveles,
+    };
+  });
+
+  return Promise.all(calls);
 }
