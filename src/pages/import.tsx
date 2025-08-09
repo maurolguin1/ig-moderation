@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 
-type Stage = 'Listo' | 'Subiendo' | 'Parseando' | 'Insertando' | 'Completado' | 'Error';
+type Stage = 'Listo' | 'Parseando' | 'Subiendo' | 'Insertando' | 'Completado' | 'Error';
 
 type FileRow = {
   id: string;
@@ -11,6 +11,24 @@ type FileRow = {
   jobId?: number;
   error?: string;
 };
+
+type ParsedRow = {
+  'User Id'?: any;
+  'Username'?: any;
+  'Comment Id'?: any;
+  'Comment Text'?: any;
+  'Profile URL'?: any;
+  'Date'?: any;
+  // opcionales de clasificación
+  'Etiqueta_Agresión'?: any;
+  'Color_Agresión_Hex'?: any;
+  'Polaridad_Postura'?: any;
+  'Tipo_Acoso'?: any;
+  'Es_Ataque'?: any;
+  'Notas'?: any;
+};
+
+const CHUNK_SIZE = 300; // filas por request; ajustable
 
 export default function ImportPage() {
   const [rows, setRows] = useState<FileRow[]>([]);
@@ -37,76 +55,84 @@ export default function ImportPage() {
     e.preventDefault();
   }
 
-  async function countRows(file: File, onParsed: (count: number) => void) {
-    const worker = new Worker(new URL('../workers/xlsxWorker.ts', import.meta.url), { type: 'module' });
-    worker.onmessage = (ev: MessageEvent) => {
-      onParsed(ev.data.rows || 0);
-      worker.terminate();
-    };
-    const buf = await file.arrayBuffer();
-    worker.postMessage({ arrayBuffer: buf }, [buf]);
-  }
-
   function updateRow(id: string, patch: Partial<FileRow>) {
     setRows((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)));
   }
 
-  function uploadWithProgress(fr: FileRow) {
-    return new Promise<{ jobId: number; rowsDetected: number }>((resolve, reject) => {
-      const xhr = new XMLHttpRequest();
-      const form = new FormData();
-      form.append('files', fr.file);
-      form.append('videoSource', videoSource);
-
-      xhr.open('POST', '/api/import');
-
-      xhr.upload.onprogress = (e) => {
-        if (e.lengthComputable) {
-          const pct = Math.round((e.loaded / e.total) * 100);
-          updateRow(fr.id, { stage: 'Subiendo', progress: pct });
-        }
+  async function parseInWorker(file: File): Promise<ParsedRow[]> {
+    const worker = new Worker(new URL('../workers/xlsxParseWorker.ts', import.meta.url), { type: 'module' });
+    return new Promise((resolve, reject) => {
+      worker.onmessage = (ev: MessageEvent) => {
+        const { rows, error } = ev.data || {};
+        worker.terminate();
+        if (error) reject(new Error(error));
+        else resolve(rows || []);
       };
-
-      xhr.onreadystatechange = function () {
-        if (xhr.readyState === 4) {
-          if (xhr.status >= 200 && xhr.status < 300) {
-            const json = JSON.parse(xhr.responseText);
-            const jobId = json?.summaries?.[0]?.jobId || json?.jobId;
-            resolve({ jobId, rowsDetected: (fr as any).rowsDetected || 0 });
-          } else {
-            reject(new Error(xhr.responseText || 'Upload error'));
-          }
-        }
+      worker.onerror = (e) => {
+        worker.terminate();
+        reject(e.error || new Error('Worker error'));
       };
-      xhr.send(form);
+      file.arrayBuffer().then((buf) => {
+        worker.postMessage({ arrayBuffer: buf }, [buf]);
+      });
     });
   }
 
-  async function pollJob(fr: FileRow, jobId: number, rowsDetected: number) {
-    let done = false;
-    while (!done) {
-      const res = await fetch('/api/import/jobs');
-      const jobs = await res.json();
-      const job = jobs.find((j: any) => j.id === jobId);
-      if (job) {
-        const total = job.rows_detected || rowsDetected || 1;
-        const pct = Math.min(100, Math.round(((job.rows_inserted + job.rows_error) / total) * 100));
-        updateRow(fr.id, { stage: pct < 100 ? 'Insertando' : 'Completado', progress: pct });
-        done = !!job.finished_at;
-      }
-      if (!done) await new Promise((r) => setTimeout(r, 1200));
-    }
+  async function beginJob(filename: string, rowsDetected: number) {
+    const res = await fetch('/api/import/begin', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filename, videoSource, rowsDetected }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const json = await res.json();
+    return json.jobId as number;
+  }
+
+  async function sendChunk(jobId: number, chunk: ParsedRow[]) {
+    const res = await fetch('/api/import/bulk', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jobId, videoSource, rows: chunk }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  }
+
+  async function finishJob(jobId: number) {
+    const res = await fetch('/api/import/finish', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jobId }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
   }
 
   async function startImport(fr: FileRow) {
     try {
       updateRow(fr.id, { stage: 'Parseando', progress: 5 });
-      await countRows(fr.file, (count) => updateRow(fr.id, { rowsDetected: count, stage: 'Parseando', progress: 15 }));
-      const { jobId, rowsDetected } = await uploadWithProgress(fr);
+      const parsed = await parseInWorker(fr.file);
+      updateRow(fr.id, { rowsDetected: parsed.length });
+
+      const jobId = await beginJob(fr.file.name, parsed.length);
       updateRow(fr.id, { jobId });
-      await pollJob(fr, jobId, rowsDetected);
+
+      // Subir + insertar en chunks
+      let processed = 0;
+      for (let i = 0; i < parsed.length; i += CHUNK_SIZE) {
+        const chunk = parsed.slice(i, i + CHUNK_SIZE);
+        updateRow(fr.id, { stage: 'Subiendo' });
+        await sendChunk(jobId, chunk);
+        processed += chunk.length;
+        const pct = Math.min(99, Math.round((processed / parsed.length) * 100));
+        updateRow(fr.id, { stage: 'Insertando', progress: pct });
+      }
+
+      await finishJob(jobId);
+      updateRow(fr.id, { stage: 'Completado', progress: 100 });
     } catch (e: any) {
-      updateRow(fr.id, { stage: 'Error', error: e.message || 'Error', progress: 0 });
+      updateRow(fr.id, { stage: 'Error', error: e?.message || 'Error', progress: 0 });
     }
   }
 
@@ -114,9 +140,9 @@ export default function ImportPage() {
     <div className="p-6">
       <h1 className="text-xl font-semibold mb-4">Importar</h1>
 
-      <div className="mb-3">
+      <div className="mb-3 flex gap-2">
         <input
-          className="border rounded px-3 py-2 mr-2"
+          className="border rounded px-3 py-2 flex-1"
           placeholder="videoSource (tag/origen)"
           value={videoSource}
           onChange={(e) => setVideoSource(e.target.value)}
@@ -134,7 +160,7 @@ export default function ImportPage() {
         onDragEnter={prevent}
         onDragLeave={prevent}
       >
-        Arrastra y suelta aquí tus archivos XLSX/CSV
+        Arrastra y suelta aquí tus archivos XLSX
       </div>
 
       <div className="space-y-2">
@@ -152,6 +178,13 @@ export default function ImportPage() {
               {r.jobId ? ` · Job #${r.jobId}` : ''}
               {r.error ? ` · Error: ${r.error}` : ''}
             </div>
+            {r.stage === 'Listo' && (
+              <div className="mt-2">
+                <button className="border rounded px-3 py-1" onClick={() => startImport(r)}>
+                  Iniciar importación
+                </button>
+              </div>
+            )}
             {r.jobId && (
               <a className="text-xs text-blue-600 hover:underline" href={`/imports?focus=${r.jobId}`}>
                 Ver en gestor de importaciones →
