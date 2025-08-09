@@ -188,8 +188,7 @@ export interface SearchFilters {
   limit?: number;
 }
 
-// parser: comillas = frase exacta (usa websearch); -término = exclusión (websearch);
-// * prefijo → lo separamos como prefix_terms para ILIKE prefix
+// parser: comillas = frase exacta; -término = exclusión; * prefijo → prefix_terms
 export function parseQueryForRpc(q?: string): { webq: string | null; prefixTerms: string[] } {
   if (!q) return { webq: null, prefixTerms: [] };
 
@@ -305,4 +304,71 @@ export async function compareGroups(groups: SearchFilters[]): Promise<GroupMetri
   });
 
   return Promise.all(calls);
+}
+
+// ---------------- Export (XLSX / CSV) ----------------
+export async function generateXlsxExport(filters: SearchFilters, title = 'export') {
+  // traemos los datos (levantamos límite si lo setearon bajo)
+  const res = await searchComments({ ...filters, page: 1, limit: filters.limit ?? 50000 });
+  const rows = res.items.map((r: any) => ({
+    id: r.id,
+    commentId: r.comment_id,
+    userId: r.user_id,
+    username: r.username,
+    commentText: r.comment_text,
+    profileUrl: r.profile_url,
+    date: r.date ? dayjs(r.date).toISOString() : '',
+    videoSource: r.video_source,
+    etiquetaAgresion: r.etiqueta_agresion,
+    nivelAgresion: r.nivel_agresion,
+    colorAgresionHex: r.color_agresion_hex,
+    polaridadPostura: r.polaridad_postura,
+    tipoAcoso: r.tipo_acoso,
+    esAtaque: r.es_ataque,
+    notas: r.notas,
+    isDuplicado: !!r.is_duplicate,
+  }));
+
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.json_to_sheet(rows);
+  XLSX.utils.book_append_sheet(wb, ws, 'Export');
+
+  const buffer: Buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as unknown as Buffer;
+  return {
+    buffer,
+    filename: `${title}.xlsx`,
+    mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  };
+}
+
+export async function generateCsvExport(filters: SearchFilters, title = 'export') {
+  const res = await searchComments({ ...filters, page: 1, limit: filters.limit ?? 50000 });
+  const rows = res.items.map((r: any) => ({
+    id: r.id,
+    commentId: r.comment_id,
+    userId: r.user_id,
+    username: r.username,
+    commentText: r.comment_text,
+    profileUrl: r.profile_url,
+    date: r.date ? dayjs(r.date).toISOString() : '',
+    videoSource: r.video_source,
+    etiquetaAgresion: r.etiqueta_agresion,
+    nivelAgresion: r.nivel_agresion,
+    colorAgresionHex: r.color_agresion_hex,
+    polaridadPostura: r.polaridad_postura,
+    tipoAcoso: r.tipo_acoso,
+    esAtaque: r.es_ataque,
+    notas: r.notas,
+    isDuplicado: !!r.is_duplicate,
+  }));
+
+  const ws = XLSX.utils.json_to_sheet(rows);
+  const csv = XLSX.utils.sheet_to_csv(ws);
+  const buffer = Buffer.from(csv, 'utf8');
+
+  return {
+    buffer,
+    filename: `${title}.csv`,
+    mime: 'text/csv; charset=utf-8',
+  };
 }
