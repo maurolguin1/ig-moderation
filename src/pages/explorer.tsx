@@ -1,7 +1,8 @@
 import Layout from '@/components/Layout';
 import { useState, useEffect } from 'react';
-import { Chart, Bar } from 'react-chartjs-2';
+import { Bar } from 'react-chartjs-2';
 import {
+  Chart as ChartJS,
   CategoryScale,
   LinearScale,
   BarElement,
@@ -10,7 +11,7 @@ import {
   Legend,
 } from 'chart.js';
 
-Chart.register(CategoryScale, LinearScale, BarElement, Title, Tooltip, Legend);
+ChartJS.register(CategoryScale, LinearScale, BarElement, Title, Tooltip, Legend);
 
 interface CommentItem {
   id: number;
