@@ -1,7 +1,7 @@
 import * as XLSX from 'xlsx';
 import dayjs from 'dayjs';
 import utc from 'dayjs/plugin/utc';
-import { supabaseServerClient as sb } from './supabaseClient';
+import { supabaseServerClient as sb } from '../lib/supabaseClient';
 
 dayjs.extend(utc);
 
@@ -200,7 +200,7 @@ export function parseQueryForRpc(q?: string): { webq: string | null; prefixTerms
   for (const t of tokens) {
     if (t.endsWith('*') && !t.startsWith('"')) {
       prefixTerms.push(t.slice(0, -1));
-      webParts.push(t.slice(0, -1)); // igual lo dejamos en webq para ranking
+      webParts.push(t.slice(0, -1)); // también en webq para ranking
     } else {
       webParts.push(t);
     }
@@ -218,13 +218,13 @@ export async function searchComments(filters: SearchFilters) {
 
   const { data, error } = await sb.rpc('search_comments', {
     _webq: webq,
-    _prefix_terms: prefixTerms.length ? prefixTerms : null,
+    _prefix_terms: (prefixTerms && prefixTerms.length) ? prefixTerms : null,
     _username: filters.username || null,
     _level_min: filters.levelMin ?? null,
     _level_max: filters.levelMax ?? null,
     _ataque: typeof filters.ataque === 'boolean' ? filters.ataque : null,
-    _polaridades: filters.polaridad && filters.polaridad.length ? filters.polaridad : null,
-    _tipos: filters.tipoAcoso && filters.tipoAcoso.length ? filters.tipoAcoso : null,
+    _polaridades: (filters.polaridad && filters.polaridad.length) ? filters.polaridad : null,
+    _tipos: (filters.tipoAcoso && filters.tipoAcoso.length) ? filters.tipoAcoso : null,
     _from: filters.from || null,
     _to: filters.to || null,
     _video: filters.videoSource || null,
@@ -248,23 +248,19 @@ export async function searchComments(filters: SearchFilters) {
 
 // ---------------- Facets básicas (para KPIs/tablero) ----------------
 export async function computeFacets() {
-  const [{ data: total }, { data: ataques }, { data: porNivel }] = await Promise.all([
-    sb.from('comments').select('id', { count: 'exact', head: true }),
-    sb.from('comments').select('id', { count: 'exact', head: true }).eq('es_ataque', true),
-    sb.from('comments')
-      .select('nivel_agresion, count:id')
-      .neq('nivel_agresion', null)
-      .group('nivel_agresion')
-      .order('nivel_agresion', { ascending: true }),
-  ]);
+  const totalRes = await sb.from('comments').select('*', { count: 'exact', head: true });
+  const ataquesRes = await sb.from('comments').select('*', { count: 'exact', head: true }).eq('es_ataque', true);
+  const { data: porNivelData, error: porNivelErr } = await sb.rpc('count_by_level');
 
-  const totalCount = total?.length ? total.length : (total as any) ?? 0;
-  const ataquesCount = ataques?.length ? ataques.length : (ataques as any) ?? 0;
+  if (porNivelErr) throw porNivelErr;
+
+  const totalCount = totalRes.count ?? 0;
+  const ataquesCount = ataquesRes.count ?? 0;
 
   return {
     total: totalCount,
     ataques: ataquesCount,
     ataquesPct: totalCount ? Math.round((ataquesCount / totalCount) * 100) : 0,
-    porNivel: porNivel || [],
+    porNivel: porNivelData || [],
   };
 }
