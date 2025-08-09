@@ -1,180 +1,201 @@
-import Layout from '@/components/Layout';
-import { useState, useEffect } from 'react';
-import { Bar } from 'react-chartjs-2';
-import {
-  Chart as ChartJS,
-  CategoryScale,
-  LinearScale,
-  BarElement,
-  Title,
-  Tooltip,
-  Legend,
-} from 'chart.js';
+import { useRouter } from 'next/router';
+import { useEffect, useMemo, useState } from 'react';
 
-ChartJS.register(CategoryScale, LinearScale, BarElement, Title, Tooltip, Legend);
-
-interface CommentItem {
+type Item = {
   id: number;
-  comment_id: string;
-  username: string;
+  username: string | null;
   comment_text: string;
+  date: string | null;
+  video_source: string | null;
   nivel_agresion: number | null;
   es_ataque: boolean | null;
-  date: string;
-  video_source: string;
-  polaridad_postura: string | null;
-  tipo_acoso: string | null;
+  is_duplicate: boolean | null;
+  highlight?: string | null;
+};
+
+function Chip({ children, color = 'gray' }: { children: React.ReactNode; color?: 'gray' | 'red' | 'green' }) {
+  const cls =
+    color === 'red'
+      ? 'bg-red-100 text-red-800'
+      : color === 'green'
+      ? 'bg-green-100 text-green-800'
+      : 'bg-gray-100 text-gray-800';
+  return <span className={`px-2 py-0.5 rounded text-xs ${cls}`}>{children}</span>;
 }
 
 export default function ExplorerPage() {
-  const [q, setQ] = useState('');
-  const [username, setUsername] = useState('');
-  const [levelRange, setLevelRange] = useState<[number, number]>([1, 10]);
-  const [ataque, setAtaque] = useState('all');
-  const [video, setVideo] = useState('');
-  const [data, setData] = useState<CommentItem[]>([]);
+  const router = useRouter();
+  const qParams = router.query as Record<string, string>;
+
+  const [q, setQ] = useState(qParams.q || '');
+  const [username, setUsername] = useState(qParams.username || '');
+  const [video, setVideo] = useState(qParams.video || '');
+  const [ataque, setAtaque] = useState(qParams.ataque === 'true' ? true : qParams.ataque === 'false' ? false : undefined);
+  const [levelMin, setLevelMin] = useState(Number(qParams.levelMin || 1));
+  const [levelMax, setLevelMax] = useState(Number(qParams.levelMax || 10));
+  const [from, setFrom] = useState(qParams.from || '');
+  const [to, setTo] = useState(qParams.to || '');
+  const [items, setItems] = useState<Item[]>([]);
   const [total, setTotal] = useState(0);
-  const [page, setPage] = useState(1);
-  const [loading, setLoading] = useState(false);
+  const [page, setPage] = useState(Number(qParams.page || 1));
   const limit = 50;
 
-  const fetchData = async () => {
-    setLoading(true);
-    const params = new URLSearchParams();
-    if (q) params.append('q', q);
-    if (username) params.append('username', username);
-    if (levelRange[0] !== 1) params.append('levelMin', String(levelRange[0]));
-    if (levelRange[1] !== 10) params.append('levelMax', String(levelRange[1]));
-    if (ataque !== 'all') params.append('ataque', ataque);
-    if (video) params.append('video', video);
-    params.append('page', String(page));
-    params.append('limit', String(limit));
+  // Persistir filtros en URL
+  useEffect(() => {
+    const query: Record<string, string> = {};
+    if (q) query.q = q;
+    if (username) query.username = username;
+    if (video) query.video = video;
+    if (typeof ataque === 'boolean') query.ataque = String(ataque);
+    if (levelMin !== 1) query.levelMin = String(levelMin);
+    if (levelMax !== 10) query.levelMax = String(levelMax);
+    if (from) query.from = from;
+    if (to) query.to = to;
+    query.page = String(page);
+    router.replace({ pathname: '/explorer', query }, undefined, { shallow: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [q, username, video, ataque, levelMin, levelMax, from, to, page]);
+
+  async function fetchData() {
+    const params = new URLSearchParams({
+      q,
+      username,
+      video,
+      page: String(page),
+      limit: String(limit),
+    });
+    if (typeof ataque === 'boolean') params.set('ataque', String(ataque));
+    if (levelMin !== 1) params.set('levelMin', String(levelMin));
+    if (levelMax !== 10) params.set('levelMax', String(levelMax));
+    if (from) params.set('from', from);
+    if (to) params.set('to', to);
     const res = await fetch(`/api/search?${params.toString()}`);
-    const result = await res.json();
-    setData(result.items);
-    setTotal(result.total);
-    setLoading(false);
-  };
+    const json = await res.json();
+    setItems(json.items || []);
+    setTotal(json.total || 0);
+  }
 
   useEffect(() => {
     fetchData();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [page]);
+  }, [router.query]);
 
-  const handleSearch = (e: React.FormEvent) => {
-    e.preventDefault();
-    setPage(1);
-    fetchData();
-  };
+  function setChipLevel(n: number) {
+    setLevelMin(n);
+    setLevelMax(n);
+  }
 
-  const totalPages = Math.ceil(total / limit);
-  const levels = Array.from({ length: 10 }, (_, idx) => idx + 1);
-  const levelCounts: number[] = new Array(10).fill(0);
-  data.forEach((c) => {
-    if (c.nivel_agresion) {
-      levelCounts[c.nivel_agresion - 1]++;
-    }
-  });
-  const chartData = {
-    labels: levels.map((l) => String(l)),
-    datasets: [
-      {
-        label: 'Distribución por nivel',
-        data: levelCounts,
-        backgroundColor: levels.map((l) => `#${['D7F9D7','C9F2D1','B7E4C7','FFF4B1','FFE08A','FFC766','FFAB4E','FF7B6E','FF5252','B00020'][l-1]}`),
-      },
-    ],
-  };
-  const chartOptions = {
-    responsive: true,
-    plugins: {
-      legend: { display: false },
-    },
-    scales: { y: { beginAtZero: true } },
-  };
   return (
-    <Layout>
-      <h1 className="text-2xl font-semibold mb-4">Explorar Comentarios</h1>
-      <form onSubmit={handleSearch} className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
-        <div>
-          <label className="block mb-1">Texto:</label>
-          <input type="text" value={q} onChange={(e) => setQ(e.target.value)} className="border p-2 rounded-md w-full" placeholder="Buscar texto" />
-        </div>
-        <div>
-          <label className="block mb-1">Usuario:</label>
-          <input type="text" value={username} onChange={(e) => setUsername(e.target.value)} className="border p-2 rounded-md w-full" placeholder="Nombre de usuario" />
-        </div>
-        <div>
-          <label className="block mb-1">Nivel de agresión:</label>
-          <div className="flex items-center space-x-2">
-            <input type="number" min={1} max={10} value={levelRange[0]} onChange={(e) => setLevelRange([Number(e.target.value), levelRange[1]])} className="border p-2 rounded-md w-16" />
-            <span>-</span>
-            <input type="number" min={1} max={10} value={levelRange[1]} onChange={(e) => setLevelRange([levelRange[0], Number(e.target.value)])} className="border p-2 rounded-md w-16" />
-          </div>
-        </div>
-        <div>
-          <label className="block mb-1">Es ataque:</label>
-          <select value={ataque} onChange={(e) => setAtaque(e.target.value)} className="border p-2 rounded-md w-full">
-            <option value="all">Todos</option>
+    <div className="p-6">
+      <h1 className="text-xl font-semibold mb-4">Explorar</h1>
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
+        <input
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder={`Texto (comillas, -excluir, *prefijo)`}
+          className="border rounded px-3 py-2"
+        />
+        <input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="Username contiene…" className="border rounded px-3 py-2" />
+        <input value={video} onChange={(e) => setVideo(e.target.value)} placeholder="videoSource exacto" className="border rounded px-3 py-2" />
+        <div className="flex items-center gap-2">
+          <label className="text-sm">Ataque</label>
+          <select
+            value={typeof ataque === 'boolean' ? String(ataque) : ''}
+            onChange={(e) => setAtaque(e.target.value === '' ? undefined : e.target.value === 'true')}
+            className="border rounded px-2 py-2"
+          >
+            <option value="">Todos</option>
             <option value="true">Sí</option>
             <option value="false">No</option>
           </select>
         </div>
-        <div>
-          <label className="block mb-1">Video:</label>
-          <input type="text" value={video} onChange={(e) => setVideo(e.target.value)} className="border p-2 rounded-md w-full" placeholder="Nombre del video" />
+        <div className="md:col-span-2">
+          <label className="text-sm block mb-1">Nivel de agresión: {levelMin}–{levelMax}</label>
+          <div className="flex gap-2 mb-2">
+            {[1, 3, 5, 7, 10].map((n) => (
+              <button key={n} onClick={() => setChipLevel(n)} className="text-xs border rounded px-2 py-1 hover:bg-gray-100">
+                {n}
+              </button>
+            ))}
+          </div>
+          <div className="flex gap-2 items-center">
+            <input type="range" min={1} max={10} value={levelMin} onChange={(e) => setLevelMin(Number(e.target.value))} />
+            <input type="range" min={1} max={10} value={levelMax} onChange={(e) => setLevelMax(Number(e.target.value))} />
+          </div>
         </div>
-        <div className="flex items-end">
-          <button type="submit" className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50">
-            Buscar
-          </button>
+        <div className="flex gap-2 items-center">
+          <label className="text-sm">Desde</label>
+          <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="border rounded px-3 py-2" />
+          <label className="text-sm">Hasta</label>
+          <input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="border rounded px-3 py-2" />
         </div>
-      </form>
-      <div className="mb-4">
-        <Bar data={chartData} options={chartOptions} height={200} />
       </div>
-      <div className="overflow-x-auto">
-        <table className="min-w-full text-sm border-collapse border border-gray-300 dark:border-gray-700">
+
+      <div className="border rounded">
+        <table className="w-full text-sm">
           <thead>
-            <tr className="bg-gray-200 dark:bg-gray-700">
-              <th className="border p-2">Fecha</th>
-              <th className="border p-2">Usuario</th>
-              <th className="border p-2">Texto</th>
-              <th className="border p-2">Nivel</th>
-              <th className="border p-2">Ataque</th>
+            <tr className="bg-gray-50">
+              <th className="text-left p-2">Fecha</th>
+              <th className="text-left p-2">Usuario</th>
+              <th className="text-left p-2">Comentario</th>
+              <th className="text-left p-2">Nivel</th>
+              <th className="text-left p-2">Video</th>
+              <th className="text-left p-2">Flags</th>
             </tr>
           </thead>
           <tbody>
-            {loading ? (
-              <tr>
-                <td colSpan={5} className="border p-2 text-center">Cargando...</td>
+            {items.map((it) => (
+              <tr key={it.id} className="border-t">
+                <td className="p-2">{it.date ? new Date(it.date).toLocaleString() : '—'}</td>
+                <td className="p-2">
+                  {username ? (
+                    <span
+                      dangerouslySetInnerHTML={{
+                        __html: (it.username || '').replace(new RegExp(`(${username})`, 'ig'), '<mark>$1</mark>'),
+                      }}
+                    />
+                  ) : (
+                    it.username || '—'
+                  )}
+                </td>
+                <td className="p-2">
+                  <div
+                    dangerouslySetInnerHTML={{
+                      __html: it.highlight || it.comment_text,
+                    }}
+                  />
+                </td>
+                <td className="p-2">{it.nivel_agresion ?? '—'}</td>
+                <td className="p-2">{it.video_source || '—'}</td>
+                <td className="p-2 flex gap-1">
+                  {it.es_ataque ? <Chip color="red">Ataque</Chip> : <Chip color="green">No ataque</Chip>}
+                  {it.is_duplicate ? <Chip>Duplicado</Chip> : null}
+                </td>
               </tr>
-            ) : (
-              data.map((c) => (
-                <tr key={c.comment_id} className={`border-b ${c.nivel_agresion ? `bg-aggression${c.nivel_agresion}` : ''}`}> 
-                  <td className="border p-2 whitespace-nowrap">{new Date(c.date).toLocaleDateString()}</td>
-                  <td className="border p-2 whitespace-nowrap">{c.username}</td>
-                  <td className="border p-2">{c.comment_text}</td>
-                  <td className="border p-2 text-center">{c.nivel_agresion ?? '-'}</td>
-                  <td className="border p-2 text-center">{c.es_ataque == null ? '-' : c.es_ataque ? 'Sí' : 'No'}</td>
-                </tr>
-              ))
+            ))}
+            {!items.length && (
+              <tr>
+                <td className="p-4 text-center text-gray-500" colSpan={6}>
+                  Sin resultados
+                </td>
+              </tr>
             )}
           </tbody>
         </table>
       </div>
-      <div className="flex justify-between items-center mt-4">
-        <p>Mostrando {data.length} de {total} resultados.</p>
-        <div className="space-x-2">
-          <button onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page === 1} className="px-3 py-1 bg-gray-200 dark:bg-gray-700 rounded disabled:opacity-50">
-            Anterior
+
+      <div className="mt-3 flex justify-between items-center">
+        <div className="text-sm text-gray-600">Total: {total}</div>
+        <div className="flex gap-2">
+          <button disabled={page <= 1} onClick={() => setPage((p) => Math.max(1, p - 1))} className="border rounded px-3 py-1">
+            ← Anterior
           </button>
-          <span>Página {page} de {totalPages || 1}</span>
-          <button onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page >= totalPages} className="px-3 py-1 bg-gray-200 dark:bg-gray-700 rounded disabled:opacity-50">
-            Siguiente
+          <button disabled={(page * limit) >= total} onClick={() => setPage((p) => p + 1)} className="border rounded px-3 py-1">
+            Siguiente →
           </button>
         </div>
       </div>
-    </Layout>
+    </div>
   );
 }
