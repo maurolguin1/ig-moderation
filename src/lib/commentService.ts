@@ -46,10 +46,7 @@ export function parseDateSmart(raw: any): { iso: string | null; original: string
   // 7/8/2025 → heurística es-CL
   if (/^\d{1,2}\/\d{1,2}\/\d{2,4}/.test(original)) {
     let [a, b, c] = original.split(/[\/]/).map((x) => parseInt(x, 10));
-    // si primer número <=12 y segundo >12, era MM/DD → invierte
-    let dd = a,
-      mm = b,
-      yyyy = c;
+    let dd = a, mm = b, yyyy = c;
     if (a <= 12 && b > 12) {
       dd = b;
       mm = a;
@@ -66,7 +63,6 @@ export function parseDateSmart(raw: any): { iso: string | null; original: string
 
 // ---------------- Importación (sin dedupe) ----------------
 export async function importComments(buffer: Buffer, filename: string, videoSource: string) {
-  // Inicia job
   const { data: job, error: jobErr } = await sb
     .from('import_jobs')
     .insert({ filename, video_source: videoSource })
@@ -75,9 +71,7 @@ export async function importComments(buffer: Buffer, filename: string, videoSour
   if (jobErr) throw jobErr;
 
   const started = Date.now();
-  let rowsDetected = 0,
-    rowsInserted = 0,
-    rowsError = 0;
+  let rowsDetected = 0, rowsInserted = 0, rowsError = 0;
 
   const wb = XLSX.read(buffer, { type: 'buffer' });
   const shName = wb.SheetNames[0];
@@ -86,7 +80,7 @@ export async function importComments(buffer: Buffer, filename: string, videoSour
 
   for (let i = 0; i < rows.length; i++) {
     const r = rows[i];
-    const lineNo = i + 2; // si headers en fila 1
+    const lineNo = i + 2;
 
     const commentId = String(r['Comment Id'] ?? '').trim();
     const username = String(r['Username'] ?? '').trim();
@@ -108,9 +102,9 @@ export async function importComments(buffer: Buffer, filename: string, videoSour
       comment_id: commentId || null,
       user_id: userId || null,
       username: username || null,
-      comment_text: sanitized, // saneado para búsqueda
+      comment_text: sanitized,
       profile_url: profileUrl || null,
-      date: dateParsed.iso, // ISO o null (no bloquea)
+      date: dateParsed.iso,
       video_source: videoSource || null,
       etiqueta_agresion: etiqueta,
       nivel_agresion: nivel ? Number(nivel) : null,
@@ -176,30 +170,25 @@ export async function importComments(buffer: Buffer, filename: string, videoSour
 export interface SearchFilters {
   q?: string;
   username?: string;
-  levelMin?: number;
-  levelMax?: number;
   ataque?: boolean;
-  polaridad?: string[];
-  tipoAcoso?: string[];
   from?: string; // ISO
-  to?: string; // ISO
+  to?: string;   // ISO
   videoSource?: string;
   page?: number;
   limit?: number;
+  etiqueta?: string[];      // NUEVO
+  tipoAcoso?: string[];     // ya existía, lo mantenemos
 }
 
-// parser: comillas = frase exacta; -término = exclusión; * prefijo → prefix_terms
 export function parseQueryForRpc(q?: string): { webq: string | null; prefixTerms: string[] } {
   if (!q) return { webq: null, prefixTerms: [] };
-
   const tokens = q.match(/\"[^\"]+\"|-\S+|\S+/g) || [];
   const prefixTerms: string[] = [];
   const webParts: string[] = [];
-
   for (const t of tokens) {
     if (t.endsWith('*') && !t.startsWith('"')) {
       prefixTerms.push(t.slice(0, -1));
-      webParts.push(t.slice(0, -1)); // también en webq para ranking
+      webParts.push(t.slice(0, -1));
     } else {
       webParts.push(t);
     }
@@ -219,16 +208,17 @@ export async function searchComments(filters: SearchFilters) {
     _webq: webq,
     _prefix_terms: (prefixTerms && prefixTerms.length) ? prefixTerms : null,
     _username: filters.username || null,
-    _level_min: filters.levelMin ?? null,
-    _level_max: filters.levelMax ?? null,
+    _level_min: null, // quitamos filtro por nivel
+    _level_max: null,
     _ataque: typeof filters.ataque === 'boolean' ? filters.ataque : null,
-    _polaridades: (filters.polaridad && filters.polaridad.length) ? filters.polaridad : null,
+    _polaridades: null,
     _tipos: (filters.tipoAcoso && filters.tipoAcoso.length) ? filters.tipoAcoso : null,
     _from: filters.from || null,
     _to: filters.to || null,
     _video: filters.videoSource || null,
     _offset: offset,
     _limit: limit,
+    _etiquetas: (filters.etiqueta && filters.etiqueta.length) ? filters.etiqueta : null, // NUEVO
   });
 
   if (error) throw error;
@@ -245,13 +235,11 @@ export async function searchComments(filters: SearchFilters) {
   };
 }
 
-// ---------------- Facets básicas (para KPIs/tablero) ----------------
+// ---------------- Facets básicas ----------------
 export async function computeFacets() {
   const totalRes = await sb.from('comments').select('*', { count: 'exact', head: true });
   const ataquesRes = await sb.from('comments').select('*', { count: 'exact', head: true }).eq('es_ataque', true);
-  const { data: porNivelData, error: porNivelErr } = await sb.rpc('count_by_level');
-
-  if (porNivelErr) throw porNivelErr;
+  const { data: porNivelData } = await sb.rpc('count_by_level'); // puede devolver vacío si no tienes nivel
 
   const totalCount = totalRes.count ?? 0;
   const ataquesCount = ataquesRes.count ?? 0;
@@ -261,114 +249,5 @@ export async function computeFacets() {
     ataques: ataquesCount,
     ataquesPct: totalCount ? Math.round((ataquesCount / totalCount) * 100) : 0,
     porNivel: porNivelData || [],
-  };
-}
-
-// ---------------- Comparador ----------------
-export type GroupMetrics = {
-  total: number;
-  ataques: number;
-  ataquesPct: number;
-  niveles: { level: number; count: number }[];
-};
-
-export async function compareGroups(groups: SearchFilters[]): Promise<GroupMetrics[]> {
-  const calls = groups.map(async (g) => {
-    const { data, error } = await sb.rpc('metrics_for_filter', {
-      _username: g.username || null,
-      _level_min: g.levelMin ?? null,
-      _level_max: g.levelMax ?? null,
-      _ataque: typeof g.ataque === 'boolean' ? g.ataque : null,
-      _polaridades: g.polaridad && g.polaridad.length ? g.polaridad : null,
-      _tipos: g.tipoAcoso && g.tipoAcoso.length ? g.tipoAcoso : null,
-      _from: g.from || null,
-      _to: g.to || null,
-      _video: g.videoSource || null,
-    });
-    if (error) throw error;
-    const row = (data && data[0]) || { total: 0, ataques: 0, niveles: {} };
-    const nivelesObj = row.niveles || {};
-    const niveles: { level: number; count: number }[] = Object.keys(nivelesObj)
-      .map((k) => ({ level: Number(k), count: Number(nivelesObj[k]) }))
-      .sort((a, b) => a.level - b.level);
-
-    const total = Number(row.total) || 0;
-    const ataques = Number(row.ataques) || 0;
-
-    return {
-      total,
-      ataques,
-      ataquesPct: total ? Math.round((ataques / total) * 100) : 0,
-      niveles,
-    };
-  });
-
-  return Promise.all(calls);
-}
-
-// ---------------- Export (XLSX / CSV) ----------------
-export async function generateXlsxExport(filters: SearchFilters, title = 'export') {
-  // traemos los datos (levantamos límite si lo setearon bajo)
-  const res = await searchComments({ ...filters, page: 1, limit: filters.limit ?? 50000 });
-  const rows = res.items.map((r: any) => ({
-    id: r.id,
-    commentId: r.comment_id,
-    userId: r.user_id,
-    username: r.username,
-    commentText: r.comment_text,
-    profileUrl: r.profile_url,
-    date: r.date ? dayjs(r.date).toISOString() : '',
-    videoSource: r.video_source,
-    etiquetaAgresion: r.etiqueta_agresion,
-    nivelAgresion: r.nivel_agresion,
-    colorAgresionHex: r.color_agresion_hex,
-    polaridadPostura: r.polaridad_postura,
-    tipoAcoso: r.tipo_acoso,
-    esAtaque: r.es_ataque,
-    notas: r.notas,
-    isDuplicado: !!r.is_duplicate,
-  }));
-
-  const wb = XLSX.utils.book_new();
-  const ws = XLSX.utils.json_to_sheet(rows);
-  XLSX.utils.book_append_sheet(wb, ws, 'Export');
-
-  const buffer: Buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as unknown as Buffer;
-  return {
-    buffer,
-    filename: `${title}.xlsx`,
-    mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  };
-}
-
-export async function generateCsvExport(filters: SearchFilters, title = 'export') {
-  const res = await searchComments({ ...filters, page: 1, limit: filters.limit ?? 50000 });
-  const rows = res.items.map((r: any) => ({
-    id: r.id,
-    commentId: r.comment_id,
-    userId: r.user_id,
-    username: r.username,
-    commentText: r.comment_text,
-    profileUrl: r.profile_url,
-    date: r.date ? dayjs(r.date).toISOString() : '',
-    videoSource: r.video_source,
-    etiquetaAgresion: r.etiqueta_agresion,
-    nivelAgresion: r.nivel_agresion,
-    colorAgresionHex: r.color_agresion_hex,
-    polaridadPostura: r.polaridad_postura,
-    tipoAcoso: r.tipo_acoso,
-    esAtaque: r.es_ataque,
-    notas: r.notas,
-    isDuplicado: !!r.is_duplicate,
-  }));
-
-  const ws = XLSX.utils.json_to_sheet(rows);
-  const csv = XLSX.utils.sheet_to_csv(ws);
-  const buffer = Buffer.from(csv, 'utf8');
-
-  return {
-    buffer,
-    filename: `${title}.csv`,
-    mime: 'text/csv; charset=utf-8',
   };
 }
