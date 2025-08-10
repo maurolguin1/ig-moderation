@@ -11,7 +11,6 @@ type Item = {
   is_duplicate: boolean | null;
   highlight?: string | null;
   etiqueta_agresion?: string | null;
-  color_agresion_hex?: string | null;
   tipo_acoso?: string | null;
 };
 
@@ -31,22 +30,6 @@ function Chip({
   return <span className={`px-2 py-0.5 rounded text-xs ${cls}`}>{children}</span>;
 }
 
-function ColorCell({ hex }: { hex?: string | null }) {
-  if (!hex) return <span>—</span>;
-  const h = hex.startsWith('#') ? hex : `#${hex}`;
-  return (
-    <div className="flex items-center gap-2">
-      <span
-        className="inline-block w-4 h-4 rounded border"
-        style={{ backgroundColor: h, borderColor: 'rgba(0,0,0,0.15)' }}
-        aria-label={`Color ${h}`}
-        title={h}
-      />
-      <code className="text-xs">{h}</code>
-    </div>
-  );
-}
-
 export default function ExplorerPage() {
   const router = useRouter();
   const qParams = router.query as Record<string, string>;
@@ -57,10 +40,13 @@ export default function ExplorerPage() {
   const [ataque, setAtaque] = useState(
     qParams.ataque === 'true' ? true : qParams.ataque === 'false' ? false : undefined,
   );
-  const [levelMin, setLevelMin] = useState(Number(qParams.levelMin || 1));
-  const [levelMax, setLevelMax] = useState(Number(qParams.levelMax || 10));
   const [from, setFrom] = useState(qParams.from || '');
   const [to, setTo] = useState(qParams.to || '');
+
+  // Nuevos filtros
+  const [etiqueta, setEtiqueta] = useState(qParams.etiqueta || '');
+  const [acoso, setAcoso] = useState(qParams.tipoAcoso || '');
+
   const [items, setItems] = useState<Item[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(Number(qParams.page || 1));
@@ -73,14 +59,22 @@ export default function ExplorerPage() {
     if (username) query.username = username;
     if (video) query.video = video;
     if (typeof ataque === 'boolean') query.ataque = String(ataque);
-    if (levelMin !== 1) query.levelMin = String(levelMin);
-    if (levelMax !== 10) query.levelMax = String(levelMax);
     if (from) query.from = from;
     if (to) query.to = to;
+    if (etiqueta) query.etiqueta = etiqueta;
+    if (acoso) query.tipoAcoso = acoso;
     query.page = String(page);
     router.replace({ pathname: '/explorer', query }, undefined, { shallow: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [q, username, video, ataque, levelMin, levelMax, from, to, page]);
+  }, [q, username, video, ataque, from, to, etiqueta, acoso, page]);
+
+  function splitMulti(val: string): string[] | undefined {
+    const arr = (val || '')
+      .split(/[;,]/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    return arr.length ? arr : undefined;
+  }
 
   async function fetchData() {
     const params = new URLSearchParams({
@@ -91,10 +85,11 @@ export default function ExplorerPage() {
       limit: String(limit),
     });
     if (typeof ataque === 'boolean') params.set('ataque', String(ataque));
-    if (levelMin !== 1) params.set('levelMin', String(levelMin));
-    if (levelMax !== 10) params.set('levelMax', String(levelMax));
     if (from) params.set('from', from);
     if (to) params.set('to', to);
+    if (etiqueta) params.set('etiqueta', etiqueta);
+    if (acoso) params.set('tipoAcoso', acoso);
+
     const res = await fetch(`/api/search?${params.toString()}`);
     const json = await res.json();
     setItems(json.items || []);
@@ -105,11 +100,6 @@ export default function ExplorerPage() {
     fetchData();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [router.query]);
-
-  function setChipLevel(n: number) {
-    setLevelMin(n);
-    setLevelMax(n);
-  }
 
   return (
     <div className="p-6">
@@ -149,38 +139,21 @@ export default function ExplorerPage() {
           </select>
         </div>
 
-        <div className="md:col-span-2">
-          <label className="text-sm block mb-1">
-            Nivel de agresión (filtro): {levelMin}–{levelMax}
-          </label>
-          <div className="flex gap-2 mb-2">
-            {[1, 3, 5, 7, 10].map((n) => (
-              <button
-                key={n}
-                onClick={() => setChipLevel(n)}
-                className="text-xs border rounded px-2 py-1 hover:bg-gray-100"
-              >
-                {n}
-              </button>
-            ))}
-          </div>
-          <div className="flex gap-2 items-center">
-            <input
-              type="range"
-              min={1}
-              max={10}
-              value={levelMin}
-              onChange={(e) => setLevelMin(Number(e.target.value))}
-            />
-            <input
-              type="range"
-              min={1}
-              max={10}
-              value={levelMax}
-              onChange={(e) => setLevelMax(Number(e.target.value))}
-            />
-          </div>
-        </div>
+        {/* Nuevo: Etiqueta_Agresión */}
+        <input
+          value={etiqueta}
+          onChange={(e) => setEtiqueta(e.target.value)}
+          placeholder="Etiqueta_Agresión (una o varias, separa por , o ;)"
+          className="border rounded px-3 py-2 md:col-span-2"
+        />
+
+        {/* Nuevo: Tipo_Acoso */}
+        <input
+          value={acoso}
+          onChange={(e) => setAcoso(e.target.value)}
+          placeholder="Tipo_Acoso (una o varias, separa por , o ;)"
+          className="border rounded px-3 py-2 md:col-span-3"
+        />
 
         <div className="flex gap-2 items-center">
           <label className="text-sm">Desde</label>
@@ -209,7 +182,6 @@ export default function ExplorerPage() {
               <th className="text-left p-2">Usuario</th>
               <th className="text-left p-2">Comentario</th>
               <th className="text-left p-2">Etiqueta_Agresión</th>
-              <th className="text-left p-2">Color_Agresión_Hex</th>
               <th className="text-left p-2">Flags</th>
               <th className="text-left p-2">Tipo_Acoso</th>
             </tr>
@@ -243,9 +215,6 @@ export default function ExplorerPage() {
                 </td>
                 <td className="p-2">{it.etiqueta_agresion || '—'}</td>
                 <td className="p-2">
-                  <ColorCell hex={it.color_agresion_hex} />
-                </td>
-                <td className="p-2">
                   <div className="flex gap-1 flex-wrap">
                     {it.es_ataque ? <Chip color="red">Ataque</Chip> : <Chip color="green">No ataque</Chip>}
                     {it.is_duplicate ? <Chip>Duplicado</Chip> : null}
@@ -256,7 +225,7 @@ export default function ExplorerPage() {
             ))}
             {!items.length && (
               <tr>
-                <td className="p-4 text-center text-gray-500" colSpan={7}>
+                <td className="p-4 text-center text-gray-500" colSpan={6}>
                   Sin resultados
                 </td>
               </tr>
